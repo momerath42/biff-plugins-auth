@@ -9,12 +9,12 @@
   
   :biff.auth/single-opt-in
   ------------------------
-  Default: false
+  Default: true
 
   This is a standard option from biff's plugin, with a different default. It
   will probably be removed in password-supporting non-monoliths later. For now,
-  you can set it to true and enable invites, but it's mutually exclusive with
-  enable-passwords.
+  you can set it to false and enable invites, but false is mutually exclusive
+  with enable-passwords.
 
   :biff.auth/new-user-tx
   ----------------------
