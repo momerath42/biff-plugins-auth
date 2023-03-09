@@ -4,6 +4,11 @@ pom.xml.asc
 *.class
 /lib/
 /classes/
+/bin/
+/config.edn
+/secrets.env
+/storage/
+/tailwindcss/
 /target/
 /checkouts/
 .lein-deps-sum
@@ -12,3 +17,13 @@ pom.xml.asc
 .lein-failures
 .nrepl-port
 .cpcache/
+.portal/
+.lsp/
+.calva/
+*.~undo-tree~
+*~
+*#
+/example-project/storage/
+/example-project/tailwindcss/
+/example-project/target/
+/example-project/bin/

@@ -1,10 +1,6 @@
 (ns com.ractiveware.biff-plugins-auth.plugins.monolith
   (:require
-   [com.biffweb.impl.misc :as bmisc]
-   [com.biffweb.impl.rum :as brum]
-   [com.biffweb.impl.time :as btime]
-   [com.biffweb.impl.util :as butil]
-   [com.biffweb.impl.xtdb :as bxt]
+   [com.biffweb :as biff]
    [clj-http.client :as http]
    [clojure.string :as str]
    [rum.core :as rum]
@@ -29,11 +25,11 @@
                         anti-forgery-token]}
                 email]
   (str base-url "/auth/verify-link/"
-       (bmisc/jwt-encrypt
+       (biff/jwt-encrypt
         (cond-> {:intent "signin"
                  :email email
                  :exp-in (* 60 60)}
-          check-state (assoc :state (butil/sha256 anti-forgery-token)))
+          check-state (assoc :state (biff/sha256 anti-forgery-token)))
         (secret :biff/jwt-secret))))
 
 (defn new-code [length]
@@ -70,8 +66,8 @@
                            anti-forgery-token]}]
   (let [{:keys [intent email state]} (-> (merge params path-params)
                                          :token
-                                         (bmisc/jwt-decrypt (secret :biff/jwt-secret)))
-        valid-state (= state (butil/sha256 anti-forgery-token))
+                                         (biff/jwt-decrypt (secret :biff/jwt-secret)))
+        valid-state (= state (biff/sha256 anti-forgery-token))
         valid-email (= email (:email params))]
     (cond
      (not= intent "signin")
@@ -94,7 +90,7 @@
                           biff.auth/use-invite!
                           params]
                    :as ctx}]
-  (let [email (butil/normalize-email (:email params))
+  (let [email (biff/normalize-email (:email params))
         code (new-code 6)
         user-id (delay (get-user-id db email))
         invite-code (:invite-code params)]
@@ -121,10 +117,10 @@
                                params]
                         :as ctx}
                        password]
-  (let [email (butil/normalize-email (:email params))
+  (let [email (biff/normalize-email (:email params))
         user-id (get-user-id db email)
         ;; TODO? get-user fn? I don't like the two-step
-        user (bxt/lookup db :xt/id user-id)]
+        user (biff/lookup db :xt/id user-id)]
     (if (and (some? user)
              (password-checker ctx user password))
       {:success true :user user :email email}
@@ -142,7 +138,7 @@
     {:success false :error "nonconforming-password"}
     (let [tx (new-user-tx ctx email :password password)]
       (tap> {:fun :create-account! :tx tx :ctx ctx})
-      (if (bxt/submit-tx (assoc ctx :biff.xtdb/retry false) tx)
+      (if (biff/submit-tx (assoc ctx :biff.xtdb/retry false) tx)
         {:success true}
         {:success false :error "user-insert"}))))
 
@@ -170,7 +166,7 @@
                        :as ctx}]
   (assert (not (and enable-passwords (not single-opt-in)))
           "The combination of single-opt-in=false and enable-passwords=true is unsupported!")
-  (let [email (butil/normalize-email (:email params))
+  (let [email (biff/normalize-email (:email params))
         {:keys [success error]}
         (cond 
           (not (passed-recaptcha? ctx))
@@ -224,9 +220,9 @@
         (assert existing-user-id
                 "passwords enabled, but user-doc not found in verify-link-handler; note that single-opt-in must be true when using passwords")
         (tap> {:fun :verify-link-handler :req req :existing-user-id existing-user-id})
-        (bxt/submit-tx req (email-validated-tx req existing-user-id)))
+        (biff/submit-tx req (email-validated-tx req existing-user-id)))
       (when (and success (not existing-user-id))
-        (bxt/submit-tx req (new-user-tx req email))))
+        (biff/submit-tx req (new-user-tx req email))))
     {:status 303
      :headers {"location" (cond
                             success
@@ -266,7 +262,7 @@
          :headers {"location" (str "/signin?error=invalid-password&email=" email)}}))
     (let [{:keys [success error email code user-id]} (send-code! ctx)]
       (when success
-        (bxt/submit-tx (assoc ctx :biff.xtdb/retry false)
+        (biff/submit-tx (assoc ctx :biff.xtdb/retry false)
                        (concat [{:db/doc-type :biff.auth/code
                                  :db.op/upsert {:biff.auth.code/email email}
                                  :biff.auth.code/code code
@@ -287,12 +283,12 @@
                                    params
                                    session]
                             :as req}]
-  (let [email (butil/normalize-email (:email params))
-        code (bxt/lookup db :biff.auth.code/email email)
+  (let [email (biff/normalize-email (:email params))
+        code (biff/lookup db :biff.auth.code/email email)
         success (and (passed-recaptcha? req)
                      (some? code)
                      (< (:biff.auth.code/failed-attempts code) 3)
-                     (not (btime/elapsed? (:biff.auth.code/created-at code) :now 3 :minutes))
+                     (not (biff/elapsed? (:biff.auth.code/created-at code) :now 3 :minutes))
                      (= (:code params) (:biff.auth.code/code code)))
         existing-user-id (when success (get-user-id db email))
         tx (cond
@@ -308,7 +304,7 @@
               :db/op :update
               :xt/id (:xt/id code)
               :biff.auth.code/failed-attempts [:db/add 1]}])]
-    (bxt/submit-tx req tx)
+    (biff/submit-tx req tx)
     (if success
       {:status 303
        :headers {"location" app-path}
@@ -341,7 +337,7 @@
     [(merge basics invite-info password-info)]))
 
 (defn get-user-id [db email]
-  (bxt/lookup-id db :user/email email))
+  (biff/lookup-id db :user/email email))
 
 #_(defn inc-invite-uses-tx-fn [ctx invite-code]
     (let [db (xtdb.api/db ctx)
@@ -377,10 +373,10 @@
              (not (password-conforms? ctx password)))
       false
       (let [submitted-tx
-            (bxt/submit-tx
+            (biff/submit-tx
              ctx
              (fn [{:keys [biff/db]}]
-               (let [invite (bxt/lookup db :invite/code invite-code)
+               (let [invite (biff/lookup db :invite/code invite-code)
                      invite-id (:xt/id invite)]
                  (when (and (some? invite)
                             (< (:invite/uses invite)
@@ -484,7 +480,7 @@
 
 (comment
   (let [ctx (repl/get-sys)]
-    (bxt/submit-tx ctx (new-invite-tx ctx "test" 10 "test invite code")))
+    (biff/submit-tx ctx (new-invite-tx ctx "test" 10 "test invite code")))
   )
 
 ;;; FRONTEND HELPERS -----------------------------------------------------------
@@ -505,7 +501,7 @@
 
 (defn recaptcha-callback [fn-name form-id]
   [:script
-   (brum/unsafe
+   (biff/unsafe
     (str "function " fn-name "(token) { "
          "document.getElementById('" form-id "').submit();"
          "}"))])

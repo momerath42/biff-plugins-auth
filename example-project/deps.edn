@@ -1,0 +1,12 @@
+{:paths ["src" "resources" "target/resources"]
+ :deps {com.biffweb/biff {:git/url "https://github.com/jacobobryant/biff", :sha "3ebd0ef", :tag "v0.7.2"}
+        camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
+        org.clojure/clojure {:mvn/version "1.11.1"}
+        org.slf4j/slf4j-simple {:mvn/version "2.0.0-alpha5"}
+        ;; the auth plugin(s)
+        com.ractiveware/biff-plugins-auth {:local/root "../"}
+        #_{:git/url "https://github.com/momerath42/biff-plugins-auth", :tag "v0.1.0"}
+        
+        ;; debugging tool I can't live without:
+        djblue/portal {:mvn/version "0.35.0"}
+        }}
