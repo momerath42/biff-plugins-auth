@@ -92,8 +92,7 @@
                    :as ctx}]
   (let [email (biff/normalize-email (:email params))
         code (new-code 6)
-        user-id (delay (get-user-id db email))
-        invite-code (:invite-code params)]
+        user-id (delay (get-user-id db email))]
     (cond
       (not (passed-recaptcha? ctx))
       {:success false :error "recaptcha"}
@@ -116,19 +115,24 @@
                                biff.auth/get-user-id
                                params]
                         :as ctx}
+                       user-id
+                       email
                        password]
-  (let [email (biff/normalize-email (:email params))
-        user-id (get-user-id db email)
-        ;; TODO? get-user fn? I don't like the two-step
-        user (biff/lookup db :xt/id user-id)]
+  (let [user (biff/lookup db :xt/id user-id)]
+    (tap> {:fun :verify-password :email email
+           :user-id user-id :user user
+           :password password})
     (if (and (some? user)
              (password-checker ctx user password))
       {:success true :user user :email email}
-      {:success false :error "incorrect-password"})))
+      {:success false :error "incorrect-password"
+       :user user :email email})))
 
 (defn create-account! [{:keys [biff.auth/new-user-tx
                                biff.auth/enable-passwords
-                               biff.auth/password-conforms?]
+                               biff.auth/password-conforms?
+                               biff.auth/get-user-id
+                               biff/db]
                         :as ctx}
                        email & {:keys [password]}]
   (if (and (true? enable-passwords)
@@ -139,7 +143,8 @@
     (let [tx (new-user-tx ctx email :password password)]
       (tap> {:fun :create-account! :tx tx :ctx ctx})
       (if (biff/submit-tx (assoc ctx :biff.xtdb/retry false) tx)
-        {:success true}
+        (let [ctx (biff/merge-context ctx)]
+          {:success true :user-id (get-user-id db email)})
         {:success false :error "user-insert"}))))
 
 (defn error-redirect [params error]
@@ -152,53 +157,83 @@
   (let [pw-param (:password params)]
     (if (empty? pw-param) nil pw-param)))
 
+(defn validate-signup [{:keys [biff.auth/single-opt-in
+                               biff.auth/invite-required
+                               biff.auth/use-invite!
+                               biff.auth/enable-passwords
+                               biff.auth/get-user-id
+                               biff/db
+                               params]
+                        :as ctx}
+                       email]
+  (let [existing-user-id (get-user-id db email)]
+    (cond 
+      (not (passed-recaptcha? ctx))
+      {:success false :error "recaptcha"}
+      
+      (some? existing-user-id)
+      (if-let [password (normalize-password params)]
+        (if (verify-password ctx existing-user-id email password)
+          {:success true :skip-link? true ;; treat it as a login
+           :user-id existing-user-id} 
+          {:success false :error "user-exists"})
+        {:success true}) ;; treat it as a password-reset(ish)
+      
+      (true? invite-required)
+      ;; note: this creates the user in the db, if single-opt-in (refactor?)
+      (if (use-invite! ctx (:invite-code params) email)
+        {:success true}
+        {:success false :error "invalid-invite"})
+
+      ;; essentially redundant (could pass the (sometimes nil) password in
+      ;; the single-opt-in clause), but I prefer it for clarity
+      (true? enable-passwords) 
+      (let [password (normalize-password params)]
+        (create-account! ctx email :password password))
+      
+      (true? single-opt-in)
+      (create-account! ctx email)
+
+      (false? single-opt-in)
+      {:success true} ;; no-op
+
+      ;; _should_ be exhaustive; if not, an exception is appropriate
+      )))
+
 ;;; HANDLERS -------------------------------------------------------------------
 
 
-(defn signup-handler [{:keys [biff.auth/single-opt-in
-                              biff.auth/new-user-tx
-                              biff.auth/invite-required
+(defn signup-handler [{:keys [biff.auth/get-user-id
+                              biff.auth/app-path
                               biff.auth/enable-passwords
-                              biff.auth/password-conforms?
-                              biff.auth/use-invite!
+                              biff.auth/single-opt-in
                               biff/db
-                              params]
+                              params
+                              session]
                        :as ctx}]
   (assert (not (and enable-passwords (not single-opt-in)))
           "The combination of single-opt-in=false and enable-passwords=true is unsupported!")
   (let [email (biff/normalize-email (:email params))
-        {:keys [success error]}
-        (cond 
-          (not (passed-recaptcha? ctx))
-          {:success false :error "recaptcha"}
-
-          (true? invite-required)
-          ;; note: this creates the user in the db, if single-opt-in (refactor?)
-          (if (use-invite! ctx (:invite-code params) email)
-            {:success true}
-            {:success false :error "invalid-invite"})
-
-          ;; essentially redundant (could pass the (sometimes nil) password in
-          ;; the single-opt-in clause), but I prefer it for clarity
-          (true? enable-passwords) 
-          (let [password (normalize-password params)]
-            (create-account! ctx email :password password))
-          
-          (true? single-opt-in)
-          (create-account! ctx email)
-
-          (false? single-opt-in)
-          {:success true} ;; no-op
-
-          ;; _should_ be exhaustive; if not, an exception is appropriate
-          )]
-    (if success
+        {:keys [success error skip-link? user-id]}
+        (validate-signup ctx email)]
+    (cond
+      (and success skip-link?)
+      {:status 303
+       :headers {"location" app-path}
+       :session (assoc session :uid user-id)}
+      
+      success
       (let [{:keys [success error]} (send-link! ctx email)]
         (if success
           {:status 303
-           :headers {"location"
-                     (str "/link-sent?email=" email)}}
+           :headers {"location" app-path
+                     ;; decided to just log them in, for my use-case
+                     ;;(str "/link-sent?email=" email)
+                     }
+           :session (assoc session :uid user-id)}
           (error-redirect params error)))
+
+      :else
       (error-redirect params error))))
 
 (defn verify-link-handler [{:keys [biff.auth/app-path
@@ -249,31 +284,52 @@
                                           params
                                           session]
                                    :as ctx}]
-  (if (and (true? enable-passwords)
-           ;; if left blank, send a code instead
-           (:password params))
-    (let [{:keys [success error user email]}
-          (verify-password ctx (:password params))]
-      (if success
-        {:status 303
-         :headers {"location" app-path}
-         :session (assoc session :uid (:xt/id user))}
-        {:status 303
-         :headers {"location" (str "/signin?error=invalid-password&email=" email)}}))
-    (let [{:keys [success error email code user-id]} (send-code! ctx)]
-      (when success
-        (biff/submit-tx (assoc ctx :biff.xtdb/retry false)
-                       (concat [{:db/doc-type :biff.auth/code
-                                 :db.op/upsert {:biff.auth.code/email email}
-                                 :biff.auth.code/code code
-                                 :biff.auth.code/created-at :db/now
-                                 :biff.auth.code/failed-attempts 0}]
-                               (when (and single-opt-in (not user-id))
-                                 (new-user-tx ctx email)))))
+  (let [email (biff/normalize-email (:email params))
+        existing-user-id (get-user-id db email)
+        password (:password params)]
+    (tap> {:fun :login-or-send-code-handler
+           :email email :existing-user-id existing-user-id
+           :params params :password password})
+    (cond
+      (not (some? existing-user-id))
+      ;; some would consider it bad practice to leak whether or not an account
+      ;; exists, but I prefer the convenience of being told that's the problem,
+      ;; and of not having a separate form for "forgot password"
       {:status 303
-       :headers {"location" (if success
-                              (str "/verify-code?email=" (:email params))
-                              (str (:on-error params "/") "?error=" error))}})))
+       :headers {"location" (str "/signin?error=no-account&email=" email)}}
+
+      (and (true? enable-passwords)
+           ;; if left blank, send a code instead
+           (not (or (nil? password)
+                    (empty? password))))
+      (let [{:keys [success error user]}
+            (verify-password ctx existing-user-id email password)]
+        (tap> {:fun :login-or-send-code-handler :clause :password-check
+               :email email :user user
+               :params params :password (:password params)})
+        (if success
+          {:status 303
+           :headers {"location" app-path}
+           :session (assoc session :uid (:xt/id user))}
+          {:status 303
+           :headers {"location" (str "/signin?error=invalid-password&email=" email)}}))
+
+      :else
+      (let [{:keys [success error email code user-id]} (send-code! ctx)]
+        (when success
+          (biff/submit-tx (assoc ctx :biff.xtdb/retry false)
+                          (concat [{:db/doc-type :biff.auth/code
+                                    :db.op/upsert {:biff.auth.code/email email}
+                                    :biff.auth.code/code code
+                                    :biff.auth.code/created-at :db/now
+                                    :biff.auth.code/failed-attempts 0}]
+                                  (when (and single-opt-in (not user-id))
+                                    (new-user-tx ctx email)))))
+        {:status 303
+         :headers {"location" (if success
+                                (str "/verify-code?email=" (:email params))
+                                (str (:on-error params "/") "?error=" error))}})
+      )))
 
 (defn verify-code-handler [{:keys [biff.auth/app-path
                                    biff.auth/new-user-tx

@@ -102,10 +102,11 @@
                :user/email-validated true}]
 
   Given the single-opt-in=true requirement of password support, this update is
-  applied when the emailed link is clicked, so you can require that within your
-  app. Note that this default requires your application's user schema to contain
-  the :user/email-validated field, which biff templates do not have by default.
-  Something less surprising may be done in the future.
+  applied when the emailed link is clicked, so you can check the flag within
+  your app, to require email-verification. Note that this default requires your
+  application's user schema to contain the :user/email-validated field, which
+  biff templates do not have by default. Something less surprising may be done
+  in the future.
   "
   [{:biff.auth/keys
     [app-path
