@@ -5,8 +5,7 @@
    [clojure.string :as str]
    [rum.core :as rum]
    [xtdb.api :as xt]
-   [buddy.hashers :as hashers]
-   [com.ractiveware.repl :as repl]))
+   [buddy.hashers :as hashers]))
 
 (defn passed-recaptcha? [{:keys [biff/secret biff.recaptcha/threshold params]
                           :or {threshold 0.5}}]
@@ -535,6 +534,7 @@
     :invite/uses 0}])
 
 (comment
+ (require '[com.ractiveware.repl :as repl])
   (let [ctx (repl/get-sys)]
     (biff/submit-tx ctx (new-invite-tx ctx "test" 10 "test invite code")))
   )
