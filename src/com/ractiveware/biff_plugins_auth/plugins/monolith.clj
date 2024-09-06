@@ -419,8 +419,8 @@
                     [single-opt-in
                      new-user-tx
                      enable-passwords
-                     password-conforms?
-                     params]
+                     password-conforms?]
+                    :keys [params] 
                     :as ctx}
                    invite-code email]
   (let [password (normalize-password params)]
